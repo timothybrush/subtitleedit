@@ -118,16 +118,23 @@ internal static partial class MacDocumentWindow
     [DllImport(CoreFoundation)] private static extern void CFPreferencesSetAppValue(IntPtr key, IntPtr value, IntPtr applicationId);
     [DllImport(CoreFoundation)] private static extern byte CFPreferencesAppSynchronize(IntPtr applicationId);
     [DllImport(CoreFoundation)] private static extern void CFRelease(IntPtr cf);
+    [DllImport(CoreFoundation)] private static extern IntPtr CFBundleGetMainBundle();
+    [DllImport(CoreFoundation)] private static extern IntPtr CFBundleGetIdentifier(IntPtr bundle);
+    [DllImport(CoreFoundation)] private static extern byte CFStringGetCString(IntPtr str, byte[] buffer, nint bufferSize, uint encoding);
+
+    private const string SubtitleEditBundleId = "dk.nikse.subtitleedit";
 
     /// <summary>
     /// Makes the parts of the UI that macOS draws itself use the same language as Subtitle Edit,
     /// by setting this application's AppleLanguages preference - the same setting as System
     /// Settings &gt; General &gt; Language &amp; Region &gt; Applications. Must run before AppKit
     /// starts to apply to the current launch; a later change applies from the next start.
+    /// Only done from the Subtitle Edit app bundle: an unbundled run (dotnet run, the test host)
+    /// would write the setting for "dotnet" or "testhost" and change other programs' language.
     /// </summary>
     public static void SyncSystemLanguage(string? translationName)
     {
-        if (!OperatingSystem.IsMacOS())
+        if (!OperatingSystem.IsMacOS() || !IsSubtitleEditBundle())
         {
             return;
         }
@@ -174,6 +181,36 @@ internal static partial class MacDocumentWindow
     }
 
     private static string? _syncedLanguageCode;
+    private static bool? _isSubtitleEditBundle;
+
+    private static bool IsSubtitleEditBundle()
+    {
+        if (_isSubtitleEditBundle is { } known)
+        {
+            return known;
+        }
+
+        var result = false;
+        try
+        {
+            var bundle = CFBundleGetMainBundle();
+            var id = bundle == IntPtr.Zero ? IntPtr.Zero : CFBundleGetIdentifier(bundle); // not owned
+            var buffer = new byte[256];
+            if (id != IntPtr.Zero && CFStringGetCString(id, buffer, buffer.Length, KCFStringEncodingUtf8) != 0)
+            {
+                var length = Array.IndexOf(buffer, (byte)0);
+                var text = System.Text.Encoding.UTF8.GetString(buffer, 0, length < 0 ? buffer.Length : length);
+                result = string.Equals(text, SubtitleEditBundleId, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch (Exception exception)
+        {
+            Se.LogError(exception, "Could not read the macOS bundle identifier");
+        }
+
+        _isSubtitleEditBundle = result;
+        return result;
+    }
 
     private static IntPtr CfString(string s)
     {

@@ -213,11 +213,24 @@ public static class SystemUiLanguage
     [DllImport(CoreFoundation)] private static extern IntPtr CFArrayGetValueAtIndex(IntPtr array, nint index);
     [DllImport(CoreFoundation)] private static extern byte CFStringGetCString(IntPtr str, byte[] buffer, nint bufferSize, uint encoding);
     [DllImport(CoreFoundation)] private static extern void CFRelease(IntPtr cf);
+    [DllImport(CoreFoundation)] private static extern IntPtr CFPreferencesCopyValue(IntPtr key, IntPtr applicationId, IntPtr userName, IntPtr hostName);
+    [DllImport(CoreFoundation)] private static extern IntPtr CFStringCreateWithCString(IntPtr allocator, byte[] cStr, uint encoding);
+    [DllImport(CoreFoundation)] private static extern nint CFGetTypeID(IntPtr cf);
+    [DllImport(CoreFoundation)] private static extern nint CFArrayGetTypeID();
 
     private static List<string> MacPreferredLanguages()
     {
         var result = new List<string>();
-        var array = CFLocaleCopyPreferredLanguages();
+
+        // The system-wide list first. CFLocaleCopyPreferredLanguages reads this app's own
+        // AppleLanguages before the global one, and Subtitle Edit writes that itself
+        // (MacDocumentWindow.SyncSystemLanguage), so it would only echo the app's last language.
+        var array = CopyGlobalPreferredLanguages();
+        if (array == IntPtr.Zero)
+        {
+            array = CFLocaleCopyPreferredLanguages();
+        }
+
         if (array == IntPtr.Zero)
         {
             return result;
@@ -243,5 +256,38 @@ public static class SystemUiLanguage
         }
 
         return result;
+    }
+
+    private static IntPtr CopyGlobalPreferredLanguages()
+    {
+        var key = IntPtr.Zero;
+        try
+        {
+            var coreFoundation = NativeLibrary.Load(CoreFoundation);
+            var anyApplication = Marshal.ReadIntPtr(NativeLibrary.GetExport(coreFoundation, "kCFPreferencesAnyApplication"));
+            var currentUser = Marshal.ReadIntPtr(NativeLibrary.GetExport(coreFoundation, "kCFPreferencesCurrentUser"));
+            var anyHost = Marshal.ReadIntPtr(NativeLibrary.GetExport(coreFoundation, "kCFPreferencesAnyHost"));
+            key = CFStringCreateWithCString(IntPtr.Zero, System.Text.Encoding.UTF8.GetBytes("AppleLanguages\0"), KCFStringEncodingUtf8);
+            if (key == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            var value = CFPreferencesCopyValue(key, anyApplication, currentUser, anyHost);
+            if (value != IntPtr.Zero && CFGetTypeID(value) != CFArrayGetTypeID())
+            {
+                CFRelease(value);
+                return IntPtr.Zero;
+            }
+
+            return value;
+        }
+        finally
+        {
+            if (key != IntPtr.Zero)
+            {
+                CFRelease(key);
+            }
+        }
     }
 }

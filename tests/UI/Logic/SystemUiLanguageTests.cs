@@ -49,6 +49,19 @@ public class SystemUiLanguageTests
     }
 
     [Fact]
+    public void ReadsMacPreferredLanguages()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        // The system-wide list (not this process's own AppleLanguages) is always set on macOS.
+        Assert.NotEmpty(SystemUiLanguage.GetPreferredLanguages());
+        Assert.All(SystemUiLanguage.GetPreferredLanguages(), p => Assert.False(string.IsNullOrWhiteSpace(p)));
+    }
+
+    [Fact]
     public void EveryMappedTranslationShipsAsAFile()
     {
         var folder = FindLanguagesFolder();

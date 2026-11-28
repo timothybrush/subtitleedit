@@ -66,6 +66,9 @@ public static class InitNativeMacMenu
 
         public Window? Window;
         public NativeMenu? Root;
+
+        public NativeMenuItem? FullScreenItem;
+        public bool FullScreenHeaderSubscribed;
     }
 
     // One state per open editor window, in creation order.
@@ -89,8 +92,8 @@ public static class InitNativeMacMenu
     private static bool _windowsMenuInteropFailed;
 
     // ── App menu ─────────────────────────────────────────────────────────────
-    // Called from Program.cs. Sets the "Subtitle Edit" app dropdown contents.
-    // Avalonia also auto-appends the standard macOS items (Hide, Quit, etc.).
+    // Called from Program.cs. Sets the "Subtitle Edit" app dropdown contents, including the
+    // standard Services/Hide/Quit items (Avalonia's own are turned off, see Program.cs).
 
     public static void SetupAppMenu(Application app)
     {
@@ -600,11 +603,13 @@ public static class InitNativeMacMenu
     }
 
     /// <summary>
+    // The window state to return to when leaving full screen, per window (weak, so closed windows go away).
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Window, System.Runtime.CompilerServices.StrongBox<WindowState>> _stateBeforeFullScreen = new();
+
     /// Minimize / Zoom / Close window, the Window-menu staples AppKit expects every app to
     /// author for itself. Their key equivalents exist only where a menu item carries them, so
     /// without these items ⌘M and ⌘W do nothing at all in SE - there is no fallback for a
-    /// missing NSMenuItem the way there is for the app menu's Hide and Quit, which Avalonia
-    /// appends.
+    /// missing NSMenuItem.
     /// <para>
     /// Added at build time so they sit above the window list: AppKit appends its own entries
     /// below whatever the menu already holds when <see cref="MacWindowsMenuInterop"/> hands it
@@ -612,9 +617,6 @@ public static class InitNativeMacMenu
     /// clears the whole menu on every refresh, so it re-adds them there too.
     /// </para>
     /// </summary>
-    // The window state to return to when leaving full screen, per window (weak, so closed windows go away).
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Window, System.Runtime.CompilerServices.StrongBox<WindowState>> _stateBeforeFullScreen = new();
-
     private static void AddStandardWindowItems(NativeMenu menu, MenuState state)
     {
         var l = Se.Language.Main.Menu;
@@ -631,7 +633,7 @@ public static class InitNativeMacMenu
 
         // Native macOS full screen (its own Space), the green button's default action, with the
         // standard Ctrl+Cmd+F. Leaving goes back to the size the window had before.
-        menu.Items.Add(WindowActionItem(Clean(Se.Language.General.FullScreen), state,
+        var fullScreenItem = WindowActionItem(FullScreenHeader(state.Window), state,
             new KeyGesture(Key.F, KeyModifiers.Meta | KeyModifiers.Control),
             w =>
             {
@@ -644,9 +646,31 @@ public static class InitNativeMacMenu
                     _stateBeforeFullScreen.AddOrUpdate(w, new System.Runtime.CompilerServices.StrongBox<WindowState>(w.WindowState));
                     w.WindowState = WindowState.FullScreen;
                 }
-            }));
+            });
+        menu.Items.Add(fullScreenItem);
+        state.FullScreenItem = fullScreenItem;
         menu.Items.Add(new NativeMenuItemSeparator());
+
+        // Keep the label in step with the window ("Exit full screen" while in it, also when
+        // the green button or Esc changed the state). Subscribed once per window, since the
+        // manual window-menu fallback rebuilds these items on every refresh.
+        if (state.Window is { } window && !state.FullScreenHeaderSubscribed)
+        {
+            state.FullScreenHeaderSubscribed = true;
+            window.PropertyChanged += (_, e) =>
+            {
+                if (e.Property == Window.WindowStateProperty && state.FullScreenItem is { } item)
+                {
+                    item.Header = FullScreenHeader(window);
+                }
+            };
+        }
     }
+
+    private static string FullScreenHeader(Window? window) =>
+        Clean(window?.WindowState == WindowState.FullScreen
+            ? Se.Language.General.ExitFullScreen
+            : Se.Language.General.FullScreen);
 
     /// <summary>
     /// A menu item that acts on this menu bar's own window rather than on a view-model command.

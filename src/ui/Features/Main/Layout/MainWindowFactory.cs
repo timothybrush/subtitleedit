@@ -62,8 +62,10 @@ public static class MainWindowFactory
         UiTheme.ApplyScaleToWindow(window);
 
         // Restore the saved position only for the primary window; extra windows opening
-        // exactly on top of it would hide that a new window appeared at all.
-        if (isPrimary && Se.Settings.General.RememberPositionAndSize)
+        // exactly on top of it would hide that a new window appeared at all. A window opened
+        // with no other editor window left (macOS, from the Dock) has nothing to cover, so it
+        // also gets the remembered position and size.
+        if ((isPrimary || _openMainWindows == 0) && Se.Settings.General.RememberPositionAndSize)
         {
             UiUtil.RestoreWindowPosition(window);
         }

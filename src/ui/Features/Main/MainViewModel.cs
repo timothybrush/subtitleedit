@@ -31138,7 +31138,9 @@ public partial class MainViewModel :
                 // subtitle of a translation pair without rewriting an untouched main file.
                 if (!await HasChangesContinue())
                 {
-                    // Stay cancelled - window won't close
+                    // Stay cancelled - window won't close. A quit that asked for this close is
+                    // cancelled too, so on macOS closing the last window later keeps SE running.
+                    MainWindowFactory.QuitRequested = false;
                     return;
                 }
 
