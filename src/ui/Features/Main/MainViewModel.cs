@@ -37888,6 +37888,13 @@ public partial class MainViewModel :
             // macOS shows unsaved changes as a dot in the close button instead of a "*", and the
             // file's icon next to the title (Cmd-click for its folder, drag it to Finder or Mail).
             UpdateMacDocumentWindow(isDirty || (ShowColumnOriginalText && _changeSubtitleHashOriginal != originalHash));
+
+            // With two files in the title (translation mode) the dot can't say which one is
+            // unsaved, so each changed file keeps its "*" there too; a single file has the dot only.
+            if (isDirty && ShowColumnOriginalText)
+            {
+                text = "*" + text;
+            }
         }
         else if (isDirty)
         {
