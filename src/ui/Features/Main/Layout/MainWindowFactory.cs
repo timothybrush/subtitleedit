@@ -28,6 +28,15 @@ public static class MainWindowFactory
     // Closed never fires on a cancelled (unsaved-changes) close, so exiting is safe.
     private static int _openMainWindows;
 
+    /// <summary>
+    /// macOS keeps an app running with no windows open (reopen it from the Dock), so there
+    /// closing the last editor window only exits once the user has asked to quit - Quit in the
+    /// app menu, Cmd+Q, Quit in the Dock menu, logout - or the updater needs the process gone.
+    /// </summary>
+    public static bool QuitRequested { get; set; }
+
+    public static int OpenMainWindowCount => _openMainWindows;
+
     public static Window Create(bool isPrimary)
     {
         var window = new Window
@@ -71,14 +80,33 @@ public static class MainWindowFactory
             NativeMenu.SetMenu(window, menuBarRoot);
         }
 
+        // A window opened after the last one closed (macOS) becomes the main window, so
+        // code that parents dialogs on desktop.MainWindow never gets a closed one.
+        if (_openMainWindows == 0 &&
+            Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&
+            desktop.MainWindow != null && desktop.MainWindow != window)
+        {
+            desktop.MainWindow = window;
+        }
+
         _openMainWindows++;
         window.Closed += (_, _) =>
         {
             _openMainWindows--;
-            if (_openMainWindows <= 0)
+            if (_openMainWindows > 0)
             {
-                Environment.Exit(0);
+                return;
             }
+
+            if (OperatingSystem.IsMacOS() && !QuitRequested)
+            {
+                // Stay running like other Mac apps, but without stray helper windows: a leaked
+                // progress or undocked window would otherwise linger with no editor behind it.
+                CloseHelperWindows();
+                return;
+            }
+
+            Environment.Exit(0);
         };
 
         return window;
@@ -90,6 +118,7 @@ public static class MainWindowFactory
     /// </summary>
     public static void CloseAllMainWindows()
     {
+        QuitRequested = true;
         if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime lifetime)
         {
             return;
@@ -98,6 +127,26 @@ public static class MainWindowFactory
         foreach (var window in lifetime.Windows.Where(p => p.Name == "MainWindow").ToList())
         {
             window.Close();
+        }
+    }
+
+    private static void CloseHelperWindows()
+    {
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime lifetime)
+        {
+            return;
+        }
+
+        foreach (var window in lifetime.Windows.Where(p => p.Name != "MainWindow").ToList())
+        {
+            try
+            {
+                window.Close();
+            }
+            catch (Exception exception)
+            {
+                Se.LogError(exception, "Closing helper window after the last editor window");
+            }
         }
     }
 

@@ -139,6 +139,11 @@ public class LanguageMainMenu
     public string Help { get; set; }
     public string About { get; set; }
     public string CheckForUpdates { get; set; }
+    public string MacServices { get; set; }
+    public string MacHideX { get; set; }
+    public string MacHideOthers { get; set; }
+    public string MacShowAll { get; set; }
+    public string MacQuitX { get; set; }
     public string FixRightToLeftViaUnicodeControlCharacters { get; set; }
     public string RemoveUnicodeControlCharacters { get; set; }
     public string ReverseRightToLeftStartEnd { get; set; }
@@ -292,6 +297,11 @@ public class LanguageMainMenu
         Help = "_Help...";
         About = "_About...";
         CheckForUpdates = "_Check for updates...";
+        MacServices = "Services";
+        MacHideX = "Hide {0}";
+        MacHideOthers = "Hide Others";
+        MacShowAll = "Show All";
+        MacQuitX = "Quit {0}";
 
         FixRightToLeftViaUnicodeControlCharacters = "Fix RTL via Unicode control chars (selected lines)";
         RemoveUnicodeControlCharacters = "Remove Unicode control chars (selected lines)";

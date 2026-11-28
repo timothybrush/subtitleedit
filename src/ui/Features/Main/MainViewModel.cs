@@ -37880,7 +37880,14 @@ public partial class MainViewModel :
         text = UiUtil.HideFileNames
             ? Se.Language.Title + " " + Se.Version
             : text + " - " + Se.Language.Title + " " + Se.Version;
-        if (_changeSubtitleHash != mainHash)
+        var isDirty = _changeSubtitleHash != mainHash;
+        if (OperatingSystem.IsMacOS())
+        {
+            // macOS shows unsaved changes as a dot in the close button instead of a "*", and the
+            // file's icon next to the title (Cmd-click for its folder, drag it to Finder or Mail).
+            UpdateMacDocumentWindow(isDirty || (ShowColumnOriginalText && _changeSubtitleHashOriginal != originalHash));
+        }
+        else if (isDirty)
         {
             text = "*" + text;
         }
@@ -37904,6 +37911,37 @@ public partial class MainViewModel :
     private static readonly string CategoryTextBox = ShortcutCategory.TextBox.ToString();
 
     private string? _lastWindowTitle;
+    private bool? _lastMacDocumentEdited;
+    private string? _lastMacRepresentedFile;
+
+    private void UpdateMacDocumentWindow(bool edited)
+    {
+        if (Window == null)
+        {
+            return;
+        }
+
+        // Runs on the 400 ms title timer; only talk to AppKit when something changed.
+        if (_lastMacDocumentEdited != edited)
+        {
+            _lastMacDocumentEdited = edited;
+            MacDocumentWindow.SetDocumentEdited(Window, edited);
+        }
+
+        var file = UiUtil.HideFileNames ? string.Empty : _subtitleFileName ?? string.Empty;
+        if (!string.Equals(_lastMacRepresentedFile, file, StringComparison.Ordinal))
+        {
+            _lastMacRepresentedFile = file;
+            MacDocumentWindow.SetRepresentedFile(Window, file);
+
+            // A file just opened or saved under a new name also goes into macOS' own recent
+            // documents (right-click the app in the Dock), as in other Mac apps.
+            if (Se.Settings.File.ShowRecentFiles)
+            {
+                MacDocumentWindow.NoteRecentDocument(file);
+            }
+        }
+    }
 
     // Last state written to the waveform play/pause button icon; null until first write so
     // the first position-timer tick always sets an explicit icon.

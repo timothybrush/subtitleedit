@@ -12,7 +12,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Nikse.SubtitleEdit.Features.Main;
 using Nikse.SubtitleEdit.Features.Tools.BatchConvert;
 using Nikse.SubtitleEdit.Logic;
+using Nikse.SubtitleEdit.Logic.Compression;
 using Nikse.SubtitleEdit.Logic.Config;
+using Nikse.SubtitleEdit.Logic.Initializers;
 using Optris.Icons.Avalonia;
 using Optris.Icons.Avalonia.FontAwesome;
 using Optris.Icons.Avalonia.MaterialDesign;
@@ -21,6 +23,7 @@ using System;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 using Nikse.SubtitleEdit.UiLogic.SpellCheck;
 
 namespace Nikse.SubtitleEdit
@@ -94,15 +97,23 @@ namespace Nikse.SubtitleEdit
                 var lifetime = new ClassicDesktopStyleApplicationLifetime
                 {
                     Args = args,
-                    ShutdownMode = ShutdownMode.OnLastWindowClose
+                    // macOS apps keep running when their last window closes (see
+                    // MainWindowFactory.QuitRequested); elsewhere closing it quits.
+                    ShutdownMode = OperatingSystem.IsMacOS() ? ShutdownMode.OnExplicitShutdown : ShutdownMode.OnLastWindowClose
                 };
+
+                // Cmd+Q, Quit in the Dock menu, logout: the user wants the app gone, so closing
+                // the last window must exit even on macOS (see MainWindowFactory.QuitRequested).
+                lifetime.ShutdownRequested += (_, _) =>
+                    Nikse.SubtitleEdit.Features.Main.Layout.MainWindowFactory.QuitRequested = true;
 
                 // Register icon providers
                 IconProvider.Current
                     .Register<FontAwesomeIconProvider>()
                     .Register<MaterialDesignIconProvider>();
 
-                // Load settings
+                // Load settings. A missing settings file means this is the first start.
+                _isFirstRun = !System.IO.File.Exists(Se.GetSettingsFilePath());
                 Se.LoadSettings();
 
                 // Must precede the format warm-up below: the CHK format's constructor resolves
@@ -247,6 +258,12 @@ namespace Nikse.SubtitleEdit
                         // route. Users can still opt out with AVALONIA_IM_MODULE=none.
                         EnableIme = true,
                     })
+                    .With(new MacOSPlatformOptions
+                    {
+                        // Avalonia's own Services/Hide/Quit app-menu items are English only;
+                        // InitNativeMacMenu.SetupAppMenu adds translated ones instead.
+                        DisableDefaultApplicationMenuItems = true,
+                    })
                     .With(new AvaloniaNativePlatformOptions
                     {
                         // OpenGL first, because the default mpv player (LibMpvDynamicOpenGlControl)
@@ -317,7 +334,14 @@ namespace Nikse.SubtitleEdit
 #endif
 
                 // Start the application
-                lifetime.Start(args);
+                var exitCode = lifetime.Start(args);
+
+                // macOS: Quit with no editor window open ends the lifetime here; exit the same
+                // hard way closing the last window does, so no stray thread keeps the process.
+                if (OperatingSystem.IsMacOS())
+                {
+                    Environment.Exit(exitCode);
+                }
             }
             catch (Exception exception)
             {
@@ -402,6 +426,15 @@ namespace Nikse.SubtitleEdit
 
         private static void ConfigureApplication(AppBuilder b, ClassicDesktopStyleApplicationLifetime lifetime)
         {
+            // First start on macOS: use the system language instead of always starting in
+            // English. Runs here - once Avalonia's platform is up, so the translations can be
+            // unpacked from the embedded asset - and before the app menu and the main window's
+            // native menu bar are built, since both read the loaded translation once.
+            if (_isFirstRun && OperatingSystem.IsMacOS())
+            {
+                ApplySystemUiLanguage();
+            }
+
             // Setup Fluent 2 theme
             UiTheme.FluentTheme = new Fluent2Theme();
             UiTheme.FluentTheme.Palettes.Add(ThemeVariant.Dark, new ColorPaletteResources()
@@ -571,6 +604,14 @@ namespace Nikse.SubtitleEdit
                         var isDoubleClick = now - _lastReopenActivationTicks <= DoubleClickIntervalMs;
                         _lastReopenActivationTicks = now;
 
+                        // No editor window open (macOS keeps SE running after the last one
+                        // closes): a Dock click opens one, as in every Mac app.
+                        if (Nikse.SubtitleEdit.Features.Main.Layout.MainWindowFactory.OpenMainWindowCount == 0)
+                        {
+                            Dispatcher.UIThread.Post(Nikse.SubtitleEdit.Features.Main.Layout.MainWindowFactory.OpenNewWindow);
+                            return;
+                        }
+
                         if (isDoubleClick && lifetime.MainWindow != null)
                         {
                             Dispatcher.UIThread.Post(Nikse.SubtitleEdit.Features.Main.Layout.MainWindowFactory.OpenNewWindow);
@@ -624,6 +665,39 @@ namespace Nikse.SubtitleEdit
             var collection = new ServiceCollection();
             collection.AddSubtitleEditServices();
             Locator.Services = collection.BuildServiceProvider();
+        }
+
+        private static bool _isFirstRun;
+
+        private static void ApplySystemUiLanguage()
+        {
+            try
+            {
+                var translation = SystemUiLanguage.FindTranslation(SystemUiLanguage.GetPreferredLanguages());
+                if (translation == null || translation == "English")
+                {
+                    return;
+                }
+
+                // The translation files are normally unpacked in the background once the main
+                // window is up - too late for the first window. Unpack them now (first start only,
+                // stamped with the version so the background pass has nothing left to do). Run on
+                // the thread pool so the awaits never need the UI thread's synchronization context.
+                Task.Run(() => new LanguageInitializer(new ZipUnpacker()).UpdateLanguagesIfNeeded())
+                    .GetAwaiter().GetResult();
+
+                if (!System.IO.File.Exists(System.IO.Path.Combine(Se.TranslationFolder, translation + ".json")))
+                {
+                    return;
+                }
+
+                Se.Settings.General.Language = translation;
+                Se.LoadLanguage();
+            }
+            catch (Exception exception)
+            {
+                Se.LogError(exception, "Could not apply the system UI language");
+            }
         }
 
         private static void SetupMainWindow(ClassicDesktopStyleApplicationLifetime lifetime)
