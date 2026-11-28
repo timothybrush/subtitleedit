@@ -1122,6 +1122,10 @@ public class Se
     public static bool LoadLanguage()
     {
         Settings.General.Language ??= "English";
+
+        // Open/Save panels and other macOS-drawn UI follow the same language (takes effect when
+        // AppKit starts, so the call before the first window is the one that counts).
+        MacDocumentWindow.SyncSystemLanguage(Settings.General.Language);
         if (Settings.General.Language == "English")
         {
             // The built-in strings are English, but a translation loaded earlier in the session
@@ -1188,6 +1192,7 @@ public class Se
             var language = await JsonSerializer.DeserializeAsync(stream, SeLanguageJsonContext.Default.SeLanguage);
             Language = language ?? new SeLanguage();
             _loadedLanguage = language == null ? null : Path.GetFileNameWithoutExtension(jsonFileName);
+            MacDocumentWindow.SyncSystemLanguage(_loadedLanguage ?? "English");
         }
         catch (Exception exception)
         {

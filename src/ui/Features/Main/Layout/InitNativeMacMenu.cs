@@ -66,6 +66,9 @@ public static class InitNativeMacMenu
 
         public Window? Window;
         public NativeMenu? Root;
+
+        public NativeMenuItem? FullScreenItem;
+        public bool FullScreenHeaderSubscribed;
     }
 
     // One state per open editor window, in creation order.
@@ -89,8 +92,8 @@ public static class InitNativeMacMenu
     private static bool _windowsMenuInteropFailed;
 
     // ── App menu ─────────────────────────────────────────────────────────────
-    // Called from Program.cs. Sets the "Subtitle Edit" app dropdown contents.
-    // Avalonia also auto-appends the standard macOS items (Hide, Quit, etc.).
+    // Called from Program.cs. Sets the "Subtitle Edit" app dropdown contents, including the
+    // standard Services/Hide/Quit items (Avalonia's own are turned off, see Program.cs).
 
     public static void SetupAppMenu(Application app)
     {
@@ -110,7 +113,84 @@ public static class InitNativeMacMenu
         prefsItem.Click += (_, _) => GetVm()?.CommandShowSettingsCommand.Execute(null);
         appMenu.Items.Add(prefsItem);
 
+        AddStandardAppMenuItems(appMenu, app.Name ?? "Subtitle Edit");
+
         NativeMenu.SetMenu(app, appMenu);
+    }
+
+    // Avalonia's own Services/Hide/Hide Others/Show All/Quit items have hard-coded English titles,
+    // so they are turned off in Program.cs (MacOSPlatformOptions.DisableDefaultApplicationMenuItems)
+    // and added here with the UI translation. They do what Avalonia's did.
+    private static void AddStandardAppMenuItems(NativeMenu appMenu, string appName)
+    {
+        var l = Se.Language.Main.Menu;
+
+        appMenu.Items.Add(new NativeMenuItemSeparator());
+        var servicesMenu = new NativeMenu();
+        if (ServicesSubmenuProperty != null)
+        {
+            // Marks the submenu as NSApplication.servicesMenu, so macOS fills it.
+            servicesMenu.SetValue(ServicesSubmenuProperty, true);
+        }
+
+        appMenu.Items.Add(new NativeMenuItem(Literal(l.MacServices)) { Menu = servicesMenu });
+
+        appMenu.Items.Add(new NativeMenuItemSeparator());
+        var hideItem = new NativeMenuItem(Literal(string.Format(l.MacHideX, appName)))
+        {
+            Gesture = new KeyGesture(Key.H, KeyModifiers.Meta),
+        };
+        hideItem.Click += (_, _) => MacAppCommandsInterop.HideApp();
+        appMenu.Items.Add(hideItem);
+
+        var hideOthersItem = new NativeMenuItem(Literal(l.MacHideOthers))
+        {
+            Gesture = new KeyGesture(Key.H, KeyModifiers.Meta | KeyModifiers.Alt),
+        };
+        hideOthersItem.Click += (_, _) => MacAppCommandsInterop.HideOtherApps();
+        appMenu.Items.Add(hideOthersItem);
+
+        var showAllItem = new NativeMenuItem(Literal(l.MacShowAll));
+        showAllItem.Click += (_, _) => MacAppCommandsInterop.ShowAllApps();
+        appMenu.Items.Add(showAllItem);
+
+        appMenu.Items.Add(new NativeMenuItemSeparator());
+        var quitItem = new NativeMenuItem(Literal(string.Format(l.MacQuitX, appName)))
+        {
+            Gesture = new KeyGesture(Key.Q, KeyModifiers.Meta),
+        };
+        quitItem.Click += (_, _) =>
+        {
+            MainWindowFactory.QuitRequested = true;
+            switch (Application.Current?.ApplicationLifetime)
+            {
+                case Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop:
+                    desktop.TryShutdown();
+                    break;
+                case Avalonia.Controls.ApplicationLifetimes.IControlledApplicationLifetime controlled:
+                    controlled.Shutdown();
+                    break;
+            }
+        };
+        appMenu.Items.Add(quitItem);
+    }
+
+    // Avalonia.Native keeps the "this is the Services menu" marker on an internal class; look it
+    // up once. Without it the Services item is still shown, only empty.
+    private static readonly AvaloniaProperty? ServicesSubmenuProperty = FindServicesSubmenuProperty();
+
+    private static AvaloniaProperty? FindServicesSubmenuProperty()
+    {
+        try
+        {
+            return Type.GetType("Avalonia.Native.MacOSNativeMenuCommands, Avalonia.Native")
+                ?.GetField("IsServicesSubmenuProperty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                ?.GetValue(null) as AvaloniaProperty;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // ── Full NSMenuBar ────────────────────────────────────────────────────────
@@ -523,11 +603,13 @@ public static class InitNativeMacMenu
     }
 
     /// <summary>
+    // The window state to return to when leaving full screen, per window (weak, so closed windows go away).
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Window, System.Runtime.CompilerServices.StrongBox<WindowState>> _stateBeforeFullScreen = new();
+
     /// Minimize / Zoom / Close window, the Window-menu staples AppKit expects every app to
     /// author for itself. Their key equivalents exist only where a menu item carries them, so
     /// without these items ⌘M and ⌘W do nothing at all in SE - there is no fallback for a
-    /// missing NSMenuItem the way there is for the app menu's Hide and Quit, which Avalonia
-    /// appends.
+    /// missing NSMenuItem.
     /// <para>
     /// Added at build time so they sit above the window list: AppKit appends its own entries
     /// below whatever the menu already holds when <see cref="MacWindowsMenuInterop"/> hands it
@@ -548,8 +630,47 @@ public static class InitNativeMacMenu
             w => w.WindowState = w.WindowState == WindowState.Maximized
                 ? WindowState.Normal
                 : WindowState.Maximized));
+
+        // Native macOS full screen (its own Space), the green button's default action, with the
+        // standard Ctrl+Cmd+F. Leaving goes back to the size the window had before.
+        var fullScreenItem = WindowActionItem(FullScreenHeader(state.Window), state,
+            new KeyGesture(Key.F, KeyModifiers.Meta | KeyModifiers.Control),
+            w =>
+            {
+                if (w.WindowState == WindowState.FullScreen)
+                {
+                    w.WindowState = _stateBeforeFullScreen.TryGetValue(w, out var previous) ? previous.Value : WindowState.Normal;
+                }
+                else
+                {
+                    _stateBeforeFullScreen.AddOrUpdate(w, new System.Runtime.CompilerServices.StrongBox<WindowState>(w.WindowState));
+                    w.WindowState = WindowState.FullScreen;
+                }
+            });
+        menu.Items.Add(fullScreenItem);
+        state.FullScreenItem = fullScreenItem;
         menu.Items.Add(new NativeMenuItemSeparator());
+
+        // Keep the label in step with the window ("Exit full screen" while in it, also when
+        // the green button or Esc changed the state). Subscribed once per window, since the
+        // manual window-menu fallback rebuilds these items on every refresh.
+        if (state.Window is { } window && !state.FullScreenHeaderSubscribed)
+        {
+            state.FullScreenHeaderSubscribed = true;
+            window.PropertyChanged += (_, e) =>
+            {
+                if (e.Property == Window.WindowStateProperty && state.FullScreenItem is { } item)
+                {
+                    item.Header = FullScreenHeader(window);
+                }
+            };
+        }
     }
+
+    private static string FullScreenHeader(Window? window) =>
+        Clean(window?.WindowState == WindowState.FullScreen
+            ? Se.Language.General.ExitFullScreen
+            : Se.Language.General.FullScreen);
 
     /// <summary>
     /// A menu item that acts on this menu bar's own window rather than on a view-model command.
